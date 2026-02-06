@@ -1110,6 +1110,13 @@
   // - "on": Use LSP folding wherever possible, falling back to tree-sitter and indent-based folding when no results were returned by the server.
   "document_folding_ranges": "off",
 
+  // Controls the source of document symbols used for outlines and breadcrumbs.
+  //
+  // Options:
+  // - "tree_sitter": Use tree-sitter queries to compute document symbols (default).
+  // - "language_server": Use the language server's `textDocument/documentSymbol` response.
+  "document_symbols": "tree_sitter",
+
   // When to automatically save edited buffers. This setting can
   // take four values.
   //

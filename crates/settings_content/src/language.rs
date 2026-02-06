@@ -6,7 +6,7 @@ use serde::{Deserialize, Serialize, de::Error as _};
 use settings_macros::{MergeFrom, with_fallible_options};
 use std::sync::Arc;
 
-use crate::{DocumentFoldingRanges, ExtendingVec, SemanticTokens, merge_from};
+use crate::{DocumentFoldingRanges, DocumentSymbols, ExtendingVec, SemanticTokens, merge_from};
 
 /// The state of the modifier keys at some point in time
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema, MergeFrom)]
@@ -438,6 +438,14 @@ pub struct LanguageSettingsContent {
     ///
     /// Default: "off"
     pub document_folding_ranges: Option<DocumentFoldingRanges>,
+    /// Controls the source of document symbols used for outlines and breadcrumbs.
+    ///
+    /// Options:
+    /// - "tree_sitter": Use tree-sitter queries to compute document symbols (default).
+    /// - "language_server": Use the language server's `textDocument/documentSymbol` response.
+    ///
+    /// Default: "tree_sitter"
+    pub document_symbols: Option<DocumentSymbols>,
     /// Controls where the `editor::Rewrap` action is allowed for this language.
     ///
     /// Note: This setting has no effect in Vim mode, as rewrap is already

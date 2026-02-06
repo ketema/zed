@@ -860,3 +860,33 @@ impl DocumentFoldingRanges {
         self != &Self::Off
     }
 }
+
+#[derive(
+    Debug,
+    PartialEq,
+    Eq,
+    Clone,
+    Copy,
+    Default,
+    Serialize,
+    Deserialize,
+    JsonSchema,
+    MergeFrom,
+    strum::VariantArray,
+    strum::VariantNames,
+)]
+#[serde(rename_all = "snake_case")]
+pub enum DocumentSymbols {
+    /// Use tree-sitter queries to compute document symbols for outlines and breadcrumbs (default).
+    #[default]
+    TreeSitter,
+    /// Use the language server's `textDocument/documentSymbol` response for outlines and breadcrumbs.
+    LanguageServer,
+}
+
+impl DocumentSymbols {
+    /// Returns true if LSP document symbols should be used instead of tree-sitter.
+    pub fn lsp_enabled(&self) -> bool {
+        self == &Self::LanguageServer
+    }
+}

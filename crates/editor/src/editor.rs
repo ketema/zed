@@ -18,6 +18,7 @@ mod clangd_ext;
 pub mod code_context_menus;
 pub mod display_map;
 mod document_colors;
+mod document_symbols;
 mod editor_settings;
 mod element;
 mod folding_ranges;
@@ -7599,10 +7600,26 @@ impl Editor {
             return;
         }
         let cursor = self.selections.newest_anchor().head();
-        let multibuffer = self.buffer().read(cx).snapshot(cx);
+        let multibuffer_snapshot = self.buffer().read(cx).snapshot(cx);
+
+        if let Some(lsp_task) =
+            self.lsp_document_symbols_for_cursor(cursor, &multibuffer_snapshot, cx)
+        {
+            self.refresh_outline_symbols_task = cx.spawn(async move |this, cx| {
+                let symbols = lsp_task.await;
+                this.update(cx, |this, cx| {
+                    this.outline_symbols = symbols;
+                    cx.notify();
+                })
+                .ok();
+            });
+            return;
+        }
+
         let syntax = cx.theme().syntax().clone();
-        let background_task = cx
-            .background_spawn(async move { multibuffer.symbols_containing(cursor, Some(&syntax)) });
+        let background_task = cx.background_spawn(async move {
+            multibuffer_snapshot.symbols_containing(cursor, Some(&syntax))
+        });
         self.refresh_outline_symbols_task = cx.spawn(async move |this, cx| {
             let symbols = background_task.await;
             this.update(cx, |this, cx| {
@@ -7611,6 +7628,70 @@ impl Editor {
             })
             .ok();
         });
+    }
+
+    fn lsp_document_symbols_for_cursor(
+        &self,
+        cursor: Anchor,
+        multibuffer_snapshot: &MultiBufferSnapshot,
+        cx: &mut Context<Self>,
+    ) -> Option<Task<Option<(BufferId, Vec<OutlineItem<Anchor>>)>>> {
+        let provider = self.semantics_provider.as_ref()?;
+        let excerpt = multibuffer_snapshot.excerpt_containing(cursor..cursor)?;
+        let excerpt_id = excerpt.id();
+        let buffer_id = excerpt.buffer_id();
+        let buffer = self.buffer.read(cx).buffer(buffer_id)?;
+        let buffer_snapshot = buffer.read(cx).snapshot();
+        let task = provider.document_symbols(&buffer, cx)?;
+        let cursor_text_anchor = cursor.text_anchor;
+
+        Some(cx.background_spawn(async move {
+            let lsp_items = task.await;
+            if lsp_items.is_empty() {
+                return None;
+            }
+
+            let mut symbols: Vec<OutlineItem<Anchor>> = lsp_items
+                .into_iter()
+                .filter(|item| {
+                    item.range
+                        .start
+                        .cmp(&cursor_text_anchor, &buffer_snapshot)
+                        .is_le()
+                        && item
+                            .range
+                            .end
+                            .cmp(&cursor_text_anchor, &buffer_snapshot)
+                            .is_ge()
+                })
+                .map(|item| OutlineItem {
+                    depth: item.depth,
+                    range: Anchor::range_in_buffer(excerpt_id, item.range),
+                    source_range_for_text: Anchor::range_in_buffer(
+                        excerpt_id,
+                        item.source_range_for_text,
+                    ),
+                    text: item.text,
+                    highlight_ranges: item.highlight_ranges,
+                    name_ranges: item.name_ranges,
+                    body_range: item
+                        .body_range
+                        .map(|r| Anchor::range_in_buffer(excerpt_id, r)),
+                    annotation_range: item
+                        .annotation_range
+                        .map(|r| Anchor::range_in_buffer(excerpt_id, r)),
+                })
+                .collect();
+
+            let mut prev_depth = None;
+            symbols.retain(|item| {
+                let result = prev_depth.is_none_or(|prev_depth| item.depth > prev_depth);
+                prev_depth = Some(item.depth);
+                result
+            });
+
+            Some((buffer_id, symbols))
+        }))
     }
 
     #[ztracing::instrument(skip_all)]
@@ -26490,6 +26571,16 @@ pub trait SemanticsProvider {
         new_name: String,
         cx: &mut App,
     ) -> Option<Task<Result<ProjectTransaction>>>;
+
+    /// Returns document symbol outline items for the given buffer.
+    ///
+    /// Returns `Some(task)` when LSP document symbols are configured and available,
+    /// `None` when the caller should fall back to tree-sitter.
+    fn document_symbols(
+        &self,
+        buffer: &Entity<Buffer>,
+        cx: &mut App,
+    ) -> Option<Task<Vec<OutlineItem<text::Anchor>>>>;
 }
 
 pub trait CompletionProvider {
@@ -27091,6 +27182,29 @@ impl SemanticsProvider for Entity<Project> {
     ) -> Option<Task<Result<ProjectTransaction>>> {
         Some(self.update(cx, |project, cx| {
             project.perform_rename(buffer.clone(), position, new_name, cx)
+        }))
+    }
+
+    fn document_symbols(
+        &self,
+        buffer: &Entity<Buffer>,
+        cx: &mut App,
+    ) -> Option<Task<Vec<OutlineItem<text::Anchor>>>> {
+        let lsp_enabled = {
+            let buffer = buffer.read(cx);
+            language::language_settings::language_settings(
+                buffer.language().map(|l| l.name()),
+                buffer.file(),
+                cx,
+            )
+            .document_symbols
+            .lsp_enabled()
+        };
+        if !lsp_enabled {
+            return None;
+        }
+        Some(self.read(cx).lsp_store().update(cx, |lsp_store, cx| {
+            lsp_store.fetch_document_symbols(buffer, cx)
         }))
     }
 }
