@@ -86,7 +86,7 @@ fn write_out(
     let samples: Vec<f32> = SampleTypeConverter::<_, f32>::new(samples.into_iter()).collect();
     let mut samples = SamplesBuffer::new(
         NonZero::new(config.channels()).expect("config channel is never zero"),
-        NonZero::new(config.sample_rate().0).expect("config sample_rate is never zero"),
+        NonZero::new(config.sample_rate()).expect("config sample_rate is never zero"),
         samples,
     );
     match rodio::wav_to_file(&mut samples, path) {
