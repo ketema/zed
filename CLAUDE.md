@@ -1,1 +1,1 @@
-.rules
+/Users/ketema/CLAUDE.md
