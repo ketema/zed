@@ -560,29 +560,26 @@ impl WindowTextSystem {
         runs: &[TextRun],
         force_width: Option<Pixels>,
     ) -> Arc<LineLayout> {
-        // POST-LLM-02: FontRun boundaries occur if and only if font_id differs
-        // INV-LLM-01: Decoration differences MUST NOT affect FontRun boundaries
+        // FontRuns define font-based shaping boundaries only (ligatures, kerning).
+        // Visual decorations (color, underline, strikethrough) are handled separately
+        // via DecorationRuns in shape_line() and must not influence FontRun merging.
         let mut font_runs = self.font_runs_pool.lock().pop().unwrap_or_default();
         font_runs.clear();
 
         for run in runs.iter() {
             let font_id = self.resolve_font(&run.font);
 
-            // POST-LLM-01: Merge adjacent runs with same font_id regardless of decorations
             if let Some(font_run) = font_runs.last_mut()
                 && font_id == font_run.font_id
             {
-                // POST-LLM-03: Merged length = sum of parts
                 font_run.len += run.len;
             } else {
-                // POST-LLM-02: Create boundary only when font_id changes
                 font_runs.push(FontRun {
                     len: run.len,
                     font_id,
                 });
             }
         }
-        // POST-LLM-04: Total length preservation guaranteed by loop logic
 
         let layout = self.line_layout_cache.layout_line(
             &SharedString::new(text),
@@ -959,11 +956,24 @@ mod tests {
         black, blue, font, px, red, white, Hsla, TestAppContext, TestDispatcher, TextRun,
         WindowTextSystem,
     };
+    use std::sync::Arc;
 
     fn build_text_system() -> WindowTextSystem {
         let dispatcher = TestDispatcher::new(0);
         let cx = TestAppContext::build(dispatcher, None);
         WindowTextSystem::new(cx.text_system().clone())
+    }
+
+    /// Builds a WindowTextSystem backed by the real macOS CoreText engine.
+    /// Required for tests that need distinct font_ids for different font families,
+    /// because the default TestPlatform uses NoopTextSystem which returns the
+    /// same FontId for all fonts.
+    #[cfg(target_os = "macos")]
+    fn build_mac_text_system() -> WindowTextSystem {
+        use crate::{MacTextSystem, TextSystem};
+        let platform_text_system = Arc::new(MacTextSystem::new());
+        let text_system = Arc::new(TextSystem::new(platform_text_system));
+        WindowTextSystem::new(text_system)
     }
 
     /// Creates a TextRun with specified length, font family, and color.
@@ -1167,23 +1177,16 @@ mod tests {
         // - Category: negative
         // - Adversarial: Implementation-blind
 
-        let text_system = build_text_system();
+        // Uses real macOS CoreText to get distinct font_ids for different families.
+        // The default TestPlatform/NoopTextSystem returns the same FontId for all
+        // fonts, making it impossible to test font-boundary behavior.
+        let text_system = build_mac_text_system();
         let text = "HelloWorld";
 
-        // Two runs: regular vs bold (guaranteed different font_ids)
+        // Two runs: different font families (guaranteed different font_ids)
         let runs = vec![
-            TextRun {
-                len: 5,
-                font: font("Helvetica"),
-                color: black(),
-                ..Default::default()
-            },
-            TextRun {
-                len: 5,
-                font: font("Helvetica").bold(),
-                color: black(),
-                ..Default::default()
-            },
+            text_run(5, "Helvetica", black()),
+            text_run(5, "Menlo", black()),
         ];
 
         let layout = text_system.layout_line(text, px(14.0), &runs, None);
@@ -1194,9 +1197,9 @@ mod tests {
             2,
             "POST-LLM-02 violation: Different font_id MUST create separate FontRuns\n\
              Contract: WindowTextSystem.layout_line() POST-LLM-02\n\
-             EXPECTED: 2 FontRuns (Helvetica regular vs bold)\n\
+             EXPECTED: 2 FontRuns (Helvetica vs Menlo — distinct font families)\n\
              ACTUAL: {} FontRuns\n\
-             GUIDANCE: FontRun boundaries occur if and only if font_id differs. Different font weight = different font_id.",
+             GUIDANCE: FontRun boundaries occur if and only if font_id differs between consecutive TextRuns.",
             layout.runs.len()
         );
     }
@@ -1210,23 +1213,16 @@ mod tests {
         // - Category: boundary
         // - Adversarial: Implementation-blind
 
-        let text_system = build_text_system();
+        // Uses real macOS CoreText to get distinct font_ids for different families.
+        // The default TestPlatform/NoopTextSystem returns the same FontId for all
+        // fonts, making it impossible to test font-boundary behavior.
+        let text_system = build_mac_text_system();
         let text = "AB";
 
-        // Same color, different font (regular vs bold)
+        // Same color, different font families (guaranteed different font_ids)
         let runs = vec![
-            TextRun {
-                len: 1,
-                font: font("Helvetica"),
-                color: red(),
-                ..Default::default()
-            },
-            TextRun {
-                len: 1,
-                font: font("Helvetica").bold(),
-                color: red(),
-                ..Default::default()
-            },
+            text_run(1, "Helvetica", red()),
+            text_run(1, "Menlo", red()),
         ];
 
         let layout = text_system.layout_line(text, px(14.0), &runs, None);
@@ -1236,9 +1232,9 @@ mod tests {
             2,
             "POST-LLM-02 violation: Font change MUST create boundary even with identical decorations\n\
              Contract: WindowTextSystem.layout_line() POST-LLM-02\n\
-             EXPECTED: 2 FontRuns (font_id is the ONLY boundary criterion)\n\
+             EXPECTED: 2 FontRuns (Helvetica vs Menlo — font_id is the ONLY boundary criterion)\n\
              ACTUAL: {} FontRuns\n\
-             GUIDANCE: 'if and only if' - font_id difference is necessary AND sufficient for boundary.",
+             GUIDANCE: font_id difference is necessary AND sufficient for a FontRun boundary.",
             layout.runs.len()
         );
     }
